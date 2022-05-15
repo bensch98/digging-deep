@@ -163,5 +163,13 @@ $ xxd -b hello.o | less
 
 ```
 
+You can check that the bytes are actually exactly the same (the bytes are swapped) with following command.
+
+```bash
+# first two bytes of program
+$ printf '%x\n' "$((2#0110100001100101))"
+6865
+```
+
 While this code above is the real program in hex and binary, it also appears in a similar form in the executable file.
 In **hello** however the program is slightly adapted and not executed 1:1 as shown above.
