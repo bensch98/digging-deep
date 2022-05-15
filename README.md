@@ -33,7 +33,7 @@ This is a handwritten assembly file (.S -> capital S) as the compiled one by gcc
 extern printf     ; declare external C function
 section .data
   msg     db  "hello, world",0
-  fmtstr  db  "This is the str: %s",10,0  ; formatting string
+  fmtstr  db  "This is the str: %s",10,0  ; format string
 section .bss
 section .text
   global main
