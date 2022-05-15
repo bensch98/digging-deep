@@ -1,19 +1,39 @@
 # How does code execution work?
 
-## From C to assembly
+## From C to Assembly
 
+Begin with a hello world program in C:
 
-## Assembly
-
-Let's look at an example .asm file that prints hello world:
-
-*hello.asm*
+```C
+int main(void) {
+	prinf("hello world\n");
+	return 0;
+}
 ```
-; hello.asm
-extern printf                             ; declare external C function
+
+Compile this C file to Assembly:
+
+```bash
+gcc -S -fverbose-asm -O2 hello.c
+```
+
+**Files:**
+- *hello.c*: C source file
+- *hello.s*: gcc compiled assembly file
+
+
+## From Assembly to hex and binary
+
+Let's look at an example .S file that prints hello world.
+This is a handwritten assembly file (.S -> capital S) as the compiled one by gcc has tons of stuff that is not necessary for illustration.
+
+*hello.s*
+```
+; hello.s
+extern printf     ; declare external C function
 section .data
-  msg     db  "hello world",0
-  fmtstr  db  "This is the str: %s",10,0  ; C formatting string
+  msg     db  "hello, world",0
+  fmtstr  db  "This is the str: %s",10,0  ; formatting string
 section .bss
 section .text
   global main
@@ -23,7 +43,7 @@ main:
   mov   rdi, fmtstr     ; 1st argument for printf
   mov   rsi, msg        ; 2nd argument for printf
   mov   rax, 0
-  call  printf
+  call  printf          ; call the function
   mov   rsp,rbp
   pop   rbp
   mov   rax, 60         ; 60 = exit
@@ -35,31 +55,26 @@ Let's create a corresponding `Makefile` and make sure to use tabs as indentation
 
 *Makefile*
 ```Makefile
-# Makefile for hello.asm
+# Makefile for hello.s
 hello: hello.o
 	gcc -o hello hello.o -no-pie
-hello.o: hello.asm
-	nasm -f elf64 -g -F dwarf hello.asm -l hello.lst
+hello.o: hello.s
+	nasm -f elf64 -g -F dwarf hello.s -l hello.lst
 ```
 
-Compile `hello.asm` via `make`-command.
+Compile `hello.s` via `make`-command.
 The output is as follows:
 
 ```text
-$ ls -a
-total 36
--rwxrwxr-x 1 bensch98 bensch98 17488 Mai 15 01:33 hello
--rw-rw-r-- 1 bensch98 bensch98   657 Mai 15 01:33 hello.asm
--rw-rw-r-- 1 bensch98 bensch98  1637 Mai 15 01:33 hello.lst
--rw-rw-r-- 1 bensch98 bensch98  2464 Mai 15 01:33 hello.o
--rw-rw-r-- 1 bensch98 bensch98   139 Mai 15 11:20 Makefile
+$ ls
+hello  hello.c  hello.lst  hello.o  hello.s  hello.S  Makefile
 ```
 
 **Files:**
 - *hello*: executable file
-- *hello.asm*: original .asm file
 - *hello.lst*: file with corresponding machine code to assembly code
 - *hello.o*: binary output
+- *hello.S*: handwritten assembly file
 - *Makefile*: Makefile for compiling
 
 
@@ -68,12 +83,12 @@ total 36
 The first column (not the line numbers) are the addresses of the commands.
 The second column is the corresponding machine code of the assembly code on the right.
 ```lst
-     1                                  ;hello.asm
-     2                                  extern  printf                      ; declare the function as external
+     1                                  ; hello.s
+     2                                  extern  printf      ; declare the function as external
      3                                  section .data
      4 00000000 68656C6C6F2C20776F-       msg     db  "hello, world",0
      4 00000009 726C6400           
-     5 0000000D 54686973206973206F-       fmtstr  db  "This is our string: %s",10,0 ;printformat
+     5 0000000D 54686973206973206F-       fmtstr  db  "This is our string: %s",10,0 ; format string
      5 00000016 757220737472696E67-
      5 0000001F 3A2025730A00       
      6                                  section .bss
@@ -82,18 +97,17 @@ The second column is the corresponding machine code of the assembly code on the 
      9                                  main:
     10 00000000 55                        push    rbp
     11 00000001 4889E5                    mov     rbp,rsp
-    12 00000004 48BF-                     mov     rdi, fmtstr         ; first argument for printf
+    12 00000004 48BF-                     mov     rdi, fmtstr         ; 1st argument for printf
     12 00000006 [0D00000000000000] 
-    13 0000000E 48BE-                     mov     rsi, msg            ; second argument for printf
+    13 0000000E 48BE-                     mov     rsi, msg            ; 2nd argument for printf
     13 00000010 [0000000000000000] 
-    14 00000018 B800000000                mov     rax, 0              ; no xmm registers involved
+    14 00000018 B800000000                mov     rax, 0
     15 0000001D E8(00000000)              call    printf              ; call the function
     16 00000022 4889EC                    mov     rsp,rbp
     17 00000025 5D                        pop     rbp
     18 00000026 B83C000000                mov     rax, 60             ; 60 = exit
     19 0000002B BF00000000                mov     rdi, 0              ; 0 = success and exit code
     20 00000030 0F05                      syscall                     ; quit
-
 ```
 
 *hello.o*
@@ -104,7 +118,7 @@ This is just a snippet of the whole file. The displayed part is the actual progr
 **Note:** Two digits in hex represent one byte. The bytes are however swapped for every block. This means it is a little-endian system:
 
 ```text
-$ hexdump move.o | less
+$ hexdump hello.o | less
 
 ...
 
@@ -123,7 +137,7 @@ $ hexdump move.o | less
 In binary the commands are again in the correct order.
 This is again just a part of the whole `hello.o`. 
 ```text
-$ xxd -b move.o | less
+$ xxd -b hello.o | less
 
 ...
 
