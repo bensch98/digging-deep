@@ -4,6 +4,7 @@
 
 Begin with a hello world program in C:
 
+*hello.c*
 ```C
 int main(void) {
 	prinf("hello world\n");
@@ -78,10 +79,10 @@ hello  hello.c  hello.lst  hello.o  hello.s  hello.S  Makefile
 - *Makefile*: Makefile for compiling
 
 
-*hello.lst*
-
 The first column (not the line numbers) are the addresses of the commands.
 The second column is the corresponding machine code of the assembly code on the right.
+
+*hello.lst*
 ```lst
      1                                  ; hello.s
      2                                  extern  printf      ; declare the function as external
