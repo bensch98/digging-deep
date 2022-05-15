@@ -27,7 +27,7 @@ gcc -S -fverbose-asm -O2 hello.c
 Let's look at an example .S file that prints hello world.
 This is a handwritten assembly file (.S -> capital S) as the compiled one by gcc has tons of stuff that is not necessary for illustration.
 
-*hello.s*
+*hello.S*
 ```
 ; hello.s
 extern printf     ; declare external C function
@@ -55,11 +55,11 @@ Let's create a corresponding `Makefile` and make sure to use tabs as indentation
 
 *Makefile*
 ```Makefile
-# Makefile for hello.s
+# Makefile for hello.S
 hello: hello.o
 	gcc -o hello hello.o -no-pie
-hello.o: hello.s
-	nasm -f elf64 -g -F dwarf hello.s -l hello.lst
+hello.o: hello.S
+	nasm -f elf64 -g -F dwarf hello.S -l hello.lst
 ```
 
 Compile `hello.s` via `make`-command.
@@ -110,13 +110,14 @@ The second column is the corresponding machine code of the assembly code on the 
     20 00000030 0F05                      syscall                     ; quit
 ```
 
-*hello.o*
-This binary file is the program that is executed.
+
+This next binary file is the program that is executed.
 It can be viewed either in binary or hexadecimal.
 This is just a snippet of the whole file. The displayed part is the actual program in hex, hence the same statements as the machine code above.
 
 **Note:** Two digits in hex represent one byte. The bytes are however swapped for every block. This means it is a little-endian system:
 
+*hello.o*
 ```text
 $ hexdump hello.o | less
 
@@ -136,6 +137,8 @@ $ hexdump hello.o | less
 
 In binary the commands are again in the correct order.
 This is again just a part of the whole `hello.o`. 
+
+*hello.o*
 ```text
 $ xxd -b hello.o | less
 
@@ -172,4 +175,4 @@ $ printf '%x\n' "$((2#0110100001100101))"
 ```
 
 While this code above is the real program in hex and binary, it also appears in a similar form in the executable file.
-In **hello** however the program is slightly adapted and not executed 1:1 as shown above.
+In `hello` however the program is slightly adapted and not executed 1:1 as shown above.
