@@ -11,7 +11,7 @@ regnames = \
 
 class Regfile:
     def __init__(self):
-        self.regs = [0]*33
+        self.regs = [0] * 33
     def __getitem__(self, key):
         return self.regs[key]
     def __setitem__(self, key, value):
@@ -26,11 +26,11 @@ memory = None
 def reset():
     global regfile, memory
     regfile = Regfile()
-    # 1 byte times 65536 = 64k RAM at 0x80000000
-    memory = bytes(b'\x00' * 0x10000)
+    # 8k RAM at 0x80000000
+    memory = bytes(b'\x00' * 0x2000)
 
 from enum import Enum
-# RC32I Base Instruction Set
+# RV32I Base Instruction Set
 class Ops(Enum):
     LUI    = 0b0110111 # LUI
     LOAD   = 0b0000011 # LB[U], LH[U], LW
@@ -49,7 +49,7 @@ class Ops(Enum):
 
 class Funct3(Enum):
     ADD = SUB = ADDI = 0b000
-    SLLI  = 0b001
+    SLLI = 0b001
     SLT = SLTI = 0b010
     SLTU = SLTIU = 0b011
 
@@ -108,13 +108,23 @@ def sign_extend(x, l):
     else:
         return x
 
-def arith(funct3, x, y):
+def arith(funct3, x, y, alt):
     if funct3 == Funct3.ADDI:
-        return x + y
+        if alt:
+            return x - y
+        else:
+            return x + y
     elif funct3 == Funct3.SLLI:
         return x << (y & 0x1f)
     elif funct3 == Funct3.SRLI:
-        return x >> (y & 0x1f)
+        if alt:
+            # this is srai
+            sb = x >> 31
+            out = x >> (y & 0x1f)
+            out |= (0xffffffff * sb) << (32 - (y & 0x1f))
+            return out
+        else:
+            return x >> (y & 0x1f)
     elif funct3 == Funct3.ORI:
         return x | y
     elif funct3 == Funct3.XORI:
@@ -129,167 +139,140 @@ def arith(funct3, x, y):
         dump()
         raise Exception(f"write arith funct3 {funct3}/{funct3.value:03b}")
 
+def cond(funct3, vs1, vs2):
+    ret = False
+    if funct3 == Funct3.BEQ:
+        ret = vs1 == vs2
+    elif funct3 == Funct3.BNE:
+        ret = vs1 != vs2
+    elif funct3 == Funct3.BLT:
+        ret = sign_extend(vs1, 32) < sign_extend(vs2, 32)
+    elif funct3 == Funct3.BGE:
+        ret = sign_extend(vs1, 32) >= sign_extend(vs2, 32)
+    elif funct3 == Funct3.BLTU:
+        ret = vs1 < vs2
+    elif funct3 == Funct3.BGEU:
+        ret = vs1 >= vs2
+    else:
+        dump()
+        raise Exception(f"Write funct3: {funct3.value:03b}")
+    return ret
+
 def step():
-    # Instruction Fetch
+    # *** Instruction Fetch ***
     ins = r32(regfile[PC])
+
+    # *** Instruction decode and register fetch ***
     def gibi(s, e):
         return (ins >> e) & ((1 << (s - e + 1)) - 1)
+    opcode = Ops(gibi(6, 0))
+    funct3 = Funct3(gibi(14, 12))
+    funct7 = gibi(31, 25)
+    imm_i = sign_extend(gibi(31, 20), 12)
+    imm_s = sign_extend(gibi(31, 25) << 5 | gibi(11, 7), 12)
+    imm_b = sign_extend((gibi(32, 31) << 12 | gibi(30, 25) << 5 | gibi(11, 8) << 1 | gibi(8, 7) << 11), 13)
+    imm_u = sign_extend(gibi(31, 12) << 12, 32)
+    imm_j = sign_extend((gibi(32, 31) << 20 | gibi(30, 21) << 1 | gibi(21, 20) << 11 | gibi(19, 12) << 12), 21)
 
-    # Instruction Decode
-    opcode = Ops(gibi(6, 0)) # 0b1111111
-    #print(f"<PC: 0x{regfile[PC]:08x} | INS: 0x{ins:08x} | Ops.{opcode.name}: 0b{opcode.value:07b}>")
+    # register reads
+    vs1 = regfile[gibi(19, 15)]
+    vs2 = regfile[gibi(24, 20)]
+    vpc = regfile[PC]
+
+    # register write set up
+    rd = gibi(11, 7) if opcode != Ops.BRANCH else 0
+    reg_writeback = False
+    pend_is_new_pc = False
+    do_load = False
+    do_store = False
+    # print(f"<PC: 0x{regfile[PC]:08x} | INS: 0x{ins:08x} | Ops.{opcode.name}: 0b{opcode.value:07b}>")
+
+    # *** Execute ***
     if opcode == Ops.JAL:
         # J-type instruction
-        rd = gibi(11, 7)
-        offset = sign_extend(gibi(32, 31) << 20 | gibi(30, 21) << 1 | gibi(21, 20) << 11 | gibi(19, 12) << 12, 21)
-        regfile[rd] = regfile[PC] + 4
-        regfile[PC] += offset
-        return True
+        pend_is_new_pc = True
+        pend = vpc + imm_j
     elif opcode == Ops.JALR:
         # I-type instruction
-        rd = gibi(11, 7)
-        rs1 = gibi(19, 15)
-        imm = sign_extend(gibi(31, 20), 12)
-        nv = regfile[PC] + 4
-        regfile[PC] = regfile[rs1] + imm
-        regfile[rd] = nv
-        return True
-    elif opcode == Ops.LUI:
-        # U-type instruction
-        rd = gibi(11, 7)
-        imm = gibi(31, 12)
-        regfile[rd] = imm << 12
-    elif opcode == Ops.AUIPC:
-        # U-type instruction
-        rd = gibi(11, 7)
-        imm = gibi(31, 12)
-        regfile[rd] = regfile[PC] + sign_extend(imm << 12, 32)
-    elif opcode == Ops.OP:
-        # R-type instruction
-        rd = gibi(11, 7)
-        rs1 = gibi(19, 15)
-        rs2 = gibi(24, 20)
-        funct3 = Funct3(gibi(14, 12))
-        funct7 = gibi(31, 25)
-        if funct3 == Funct3.ADD and funct7 == 0b0100000:
-            # this is sub
-            regfile[rd] = regfile[rs1] - regfile[rs2]
-        elif funct3 == Funct3.SRA and funct7 == 0b0100000:
-            # this is sra
-            shift = regfile[rs2] & 0x1f
-            sb = regfile[rs1] >> 31
-            out = regfile[rs1] >> shift
-            out |= (0xffffffff * sb) << (32 - shift)
-            regfile[rd] = out
-        else:
-            regfile[rd] = arith(funct3, regfile[rs1], regfile[rs2])
-    elif opcode == Ops.IMM:
-        # I-type instruction
-        rd = gibi(11, 7)
-        rs1 = gibi(19, 15)
-        imm = sign_extend(gibi(31, 20), 12)
-        funct3 = Funct3(gibi(14, 12))
-        funct7 = gibi(31, 25)
-        if funct3 == Funct3.SRAI and funct7 == 0b0100000:
-            # this is srai
-            sb = regfile[rs1] >> 31
-            out = regfile[rs1] >> gibi(24, 20)
-            out |= (0xffffffff * sb) << (32 - gibi(24, 20))
-            regfile[rd] = out
-        else:
-            regfile[rd] = arith(funct3, regfile[rs1], imm)
+        pend_is_new_pc = True
+        pend = vs1 + imm_i
     elif opcode == Ops.BRANCH:
         # B-type instruction
-        rs1 = gibi(19, 15)
-        rs2 = gibi(24, 20)
-        funct3 = Funct3(gibi(14, 12))
-        offset = sign_extend(gibi(32, 31) << 12 | gibi(30, 25) << 5 | gibi(11, 8) << 1 | gibi(8, 7) << 11, 13)
-        cond = False
-        if funct3 == Funct3.BEQ:
-            cond = regfile[rs1] == regfile[rs2]
-        elif funct3 == Funct3.BNE:
-            cond = regfile[rs1] != regfile[rs2]
-        elif funct3 == Funct3.BLT:
-            cond = sign_extend(regfile[rs1], 32) < sign_extend(regfile[rs2], 32)
-        elif funct3 == Funct3.BGE:
-            cond = sign_extend(regfile[rs1], 32) >= sign_extend(regfile[rs2], 32)
-        elif funct3 == Funct3.BLTU:
-            cond = regfile[rs1] < regfile[rs2]
-        elif funct3 == Funct3.BGEU:
-            cond = regfile[rs1] >= regfile[rs2]
-        else:
-            dump()
-            raise Exception(f"Write opcode/funct3: {opcode}/{opcode.value:07b}/{funct3.value:03b}")
-        if cond:
-            regfile[PC] += offset
-            return True
-    elif opcode == Ops.LOAD:
+        if cond(funct3, vs1, vs2):
+            pend_is_new_pc = True
+            pend = vpc + imm_b
+    elif opcode == Ops.AUIPC:
+        # U-type instruction
+        pend = arith(Funct3.ADD, vpc, imm_u, False)
+        reg_writeback = True
+    elif opcode == Ops.LUI:
+        # U-type instruction
+        pend = imm_u
+        reg_writeback = True
+    elif opcode == Ops.OP:
+        # R-type instruction
+        pend = arith(funct3, vs1, vs2, funct7 == 0b0100000)
+        reg_writeback = True
+    elif opcode == Ops.IMM:
         # I-type instruction
-        rd = gibi(11, 7)
-        rs1 = gibi(19, 15)
-        funct3 = Funct3(gibi(14, 12))
-        imm = sign_extend(gibi(31, 20), 12)
-        addr = regfile[rs1] + imm 
-        if funct3 == Funct3.LB:
-            regfile[rd] = sign_extend(r32(addr) & 0xff, 8)
-        elif funct3 == Funct3.LH:
-            regfile[rd] = sign_extend(r32(addr) & 0xffff, 16)
-        elif funct3 == Funct3.LW:
-            regfile[rd] = r32(addr)
-        elif funct3 == Funct3.LBU:
-            regfile[rd] = r32(addr) & 0xff
-        elif funct3 == Funct3.LHU:
-            regfile[rd] = r32(addr) & 0xffff
-    elif opcode == Ops.STORE:
-        # S-type instruction
-        rs1 = gibi(19, 15)
-        rs2 = gibi(24, 20)
-        funct3 = Funct3(gibi(14, 12))
-        offset = sign_extend(gibi(31, 25) << 5 | gibi(11, 7) << 0, 12)
-        addr = regfile[rs1] + offset
-        value = regfile[rs2]
-        if funct3 == Funct3.SB:
-            ws(addr, struct.pack("B", value & 0xff))
-        elif funct3 == Funct3.SH:
-            ws(addr, struct.pack("H", value & 0xffff))
-        elif funct3 == Funct3.SW:
-            ws(addr, struct.pack("I", value))
+        pend = arith(funct3, vs1, imm_i, funct7 == 0b0100000 and funct3 == Funct3.SRAI)
+        reg_writeback = True
     elif opcode == Ops.MISC:
         # TODO
         pass
     elif opcode == Ops.SYSTEM:
         # I-type instruction
-        rd = gibi(11, 7)
-        funct3 = Funct3(gibi(14, 12))
-        rs1 = gibi(19, 15)
-        csr = gibi(31, 20)
-        if funct3 == Funct3.CSRRS:
-            #print("CSRRS", rd, rs1, csr)
-            pass
-        elif funct3 == Funct3.CSRRW:
-            #print("CSRRW", rd, rs1, csr)
-            if csr == 3072:
-                return False
-        elif funct3 == Funct3.CSRRWI:
-            #print("CSRRWI", rd, rs1, csr)
-            pass
+        if funct3 == Funct3.CSRRW and imm_i == -1024:
+            # hack for test exit
+            return False
         elif funct3 == Funct3.ECALL:
             print("ecall", regfile[3])
             if regfile[3] > 1:
                 raise Exception("FAILURE IN TEST, PLZ CHECK")
-            #return False
-        else:
-            raise Exception(f"Write more CSR crap: {opcode}/{opcode.value:07b}/{funct3.value:03b}")
+    # Memory access step
+    elif opcode == Ops.LOAD:
+        # I-type instruction
+        pend = vs1 + imm_i
+        do_load = True
+        reg_writeback = True
+    elif opcode == Ops.STORE:
+        # S-type instruction
+        pend = vs1 + imm_s
+        do_store = True
     else:
         dump()
         raise Exception(f"Write opcode: {opcode}/{opcode.value:07b}")
+    
+    # *** Memory access ***
+    if do_load:
+        if funct3 == Funct3.LB:
+            pend = sign_extend(r32(pend) & 0xff, 8)
+        elif funct3 == Funct3.LH:
+            pend = sign_extend(r32(pend) & 0xffff, 16)
+        elif funct3 == Funct3.LW:
+            pend = r32(pend)
+        elif funct3 == Funct3.LBU:
+            pend = r32(pend) & 0xff
+        elif funct3 == Funct3.LHU:
+            pend = r32(pend) & 0xffff
+    elif do_store:
+        if funct3 == Funct3.SB:
+            ws(pend, struct.pack("B", vs2 & 0xff))
+        elif funct3 == Funct3.SH:
+            ws(pend, struct.pack("H", vs2 & 0xffff))
+        elif funct3 == Funct3.SW:
+            ws(pend, struct.pack("I", vs2))
+    
 
-    #dump()
-    regfile[PC] += 4
+    # *** Register write back ***
+    if pend_is_new_pc:
+        regfile[rd] = vpc + 4
+        regfile[PC] = pend
+    else:
+        if reg_writeback:
+            regfile[rd] = pend
+        regfile[PC] = vpc + 4
     return True
-    # Execute
-    # Access
-    # Write-Back
 
 if __name__ == "__main__":
     xs = [i for i in glob.glob("/home/bensch98/repos/riscv-tests/isa/rv32ui-p-*")]
