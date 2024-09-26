@@ -1,6 +1,8 @@
 #!/home/bensch98/.conda/envs/riscv/bin/python
-import glob
+import os
 import struct
+import glob
+import binascii
 from elftools.elf.elffile import ELFFile
 
 regnames = \
@@ -26,8 +28,8 @@ memory = None
 def reset():
     global regfile, memory
     regfile = Regfile()
-    # 8k RAM at 0x80000000
-    memory = bytes(b'\x00' * 0x2000)
+    # 16kb RAM at 0x80000000
+    memory = bytes(b'\x00' * 0x4000)
 
 from enum import Enum
 # RV32I Base Instruction Set
@@ -180,68 +182,42 @@ def step():
     vpc = regfile[PC]
 
     # register write set up
-    rd = gibi(11, 7) if opcode != Ops.BRANCH else 0
-    reg_writeback = False
-    pend_is_new_pc = False
-    do_load = False
-    do_store = False
+    rd = gibi(11, 7)
     # print(f"<PC: 0x{regfile[PC]:08x} | INS: 0x{ins:08x} | Ops.{opcode.name}: 0b{opcode.value:07b}>")
 
     # *** Execute ***
-    if opcode == Ops.JAL:
-        # J-type instruction
-        pend_is_new_pc = True
-        pend = vpc + imm_j
-    elif opcode == Ops.JALR:
+    reg_writeback = opcode in [Ops.JAL, Ops.JALR, Ops.AUIPC, Ops.LUI, Ops.OP, Ops.IMM, Ops.LOAD]
+    do_load = opcode == Ops.LOAD
+    do_store = opcode == Ops.STORE
+
+    alt = (funct7 == 0b0100000) and (opcode == Ops.OP or (opcode == Ops.IMM and funct3 == Funct3.SRAI))
+    imm = {Ops.JAL: imm_j, Ops.JALR: imm_i, Ops.BRANCH: imm_b, Ops.AUIPC: imm_u,
+              Ops.LUI: imm_u, Ops.OP: vs2, Ops.IMM: imm_i, Ops.LOAD: imm_i, Ops.STORE: imm_s,
+              Ops.SYSTEM: imm_i, Ops.MISC: imm_i}[opcode]
+    arith_left = vpc if opcode in [Ops.JAL, Ops.BRANCH, Ops.AUIPC] else (0 if opcode == Ops.LUI else vs1)
+    arith_func = funct3 if opcode in [Ops.OP, Ops.IMM] else Funct3.ADD
+    pend_is_new_pc = opcode in [Ops.JAL, Ops.JALR] or (opcode == Ops.BRANCH and cond(funct3, vs1, vs2))
+    pend = arith(arith_func, arith_left, imm, alt)
+
+    if opcode == Ops.SYSTEM:
         # I-type instruction
-        pend_is_new_pc = True
-        pend = vs1 + imm_i
-    elif opcode == Ops.BRANCH:
-        # B-type instruction
-        if cond(funct3, vs1, vs2):
-            pend_is_new_pc = True
-            pend = vpc + imm_b
-    elif opcode == Ops.AUIPC:
-        # U-type instruction
-        pend = arith(Funct3.ADD, vpc, imm_u, False)
-        reg_writeback = True
-    elif opcode == Ops.LUI:
-        # U-type instruction
-        pend = imm_u
-        reg_writeback = True
-    elif opcode == Ops.OP:
-        # R-type instruction
-        pend = arith(funct3, vs1, vs2, funct7 == 0b0100000)
-        reg_writeback = True
-    elif opcode == Ops.IMM:
-        # I-type instruction
-        pend = arith(funct3, vs1, imm_i, funct7 == 0b0100000 and funct3 == Funct3.SRAI)
-        reg_writeback = True
-    elif opcode == Ops.MISC:
-        # TODO
-        pass
-    elif opcode == Ops.SYSTEM:
-        # I-type instruction
-        if funct3 == Funct3.CSRRW and imm_i == -1024:
-            # hack for test exit
-            return False
-        elif funct3 == Funct3.ECALL:
-            print("ecall", regfile[3])
+        if funct3 == Funct3.ECALL:
+            print(" ecall", regfile[3])
             if regfile[3] > 1:
                 raise Exception("FAILURE IN TEST, PLZ CHECK")
+            elif regfile[3] == 1:
+                # hack for test exit
+                return False
     # Memory access step
     elif opcode == Ops.LOAD:
         # I-type instruction
-        pend = vs1 + imm_i
+        pend = arith(Funct3.ADD, vs1, imm_i, False)
         do_load = True
         reg_writeback = True
     elif opcode == Ops.STORE:
         # S-type instruction
-        pend = vs1 + imm_s
+        pend = arith(Funct3.ADD, vs1, imm_s, False)
         do_store = True
-    else:
-        dump()
-        raise Exception(f"Write opcode: {opcode}/{opcode.value:07b}")
     
     # *** Memory access ***
     if do_load:
@@ -266,7 +242,8 @@ def step():
 
     # *** Register write back ***
     if pend_is_new_pc:
-        regfile[rd] = vpc + 4
+        if reg_writeback:
+            regfile[rd] = vpc + 4
         regfile[PC] = pend
     else:
         if reg_writeback:
@@ -275,9 +252,11 @@ def step():
     return True
 
 if __name__ == "__main__":
-    xs = [i for i in glob.glob("/home/bensch98/repos/riscv-tests/isa/rv32ui-p-*")]
-    xs.sort()
-    for x in xs:
+    if not os.path.isdir('test-cache'):
+        os.mkdir('test-cache')
+    tests = [i for i in glob.glob("/home/bensch98/repos/riscv-tests/isa/rv32ui-p-*")]
+    tests.sort()
+    for x in tests:
         if x.endswith(".dump"):
             continue
         with open(x, 'rb') as f:
@@ -287,6 +266,11 @@ if __name__ == "__main__":
             for s in elf.iter_segments():
                 if s.header.p_type == "PT_LOAD":
                     ws(s.header.p_paddr, s.data())
+            with open(f"test-cache/{x.split('/')[-1]}", "wb") as g:
+                g.write(b'\n'.join([binascii.hexlify(memory[i:i+4][::-1]) for i in range(0, len(memory), 8)]))
             regfile[PC] = 0x80000000
+            inscnt = 0
             while step():
+                inscnt += 1
                 pass
+            print(f"  ran {inscnt} instructions")
